@@ -502,23 +502,37 @@ def classify_topic(item):
     return "综合要闻"
 
 
-def render_email(start, end, items, overview):
+def render_email(start, end, items, overview, source_names=None):
     grouped = {}
     for item in items:
         grouped.setdefault(item["source_name"], []).append(item)
     grouped_entries = list(grouped.items())
+    source_names = list(dict.fromkeys(source_names or grouped.keys()))
+    anchor_by_source = {name: index for index, (name, _) in enumerate(grouped_entries)}
     colors = ("#176b4d", "#b14c32", "#315da8", "#7657a6")
     summary_cards = "".join(
         f'<td style="padding:6px"><div style="background:#fff;border:1px solid #e3e8e5;border-radius:10px;padding:12px 14px">'
         f'<div style="font-size:11px;color:#78817c">{html.escape(name)}</div><div style="font-size:22px;font-weight:750;color:#17221d">{len(rows)}</div></div></td>'
         for name, rows in grouped_entries)
-    toc_links = "".join(
-        f'<a href="#platform-{index}" style="display:inline-block;margin:4px 5px 4px 0;padding:9px 12px;'
-        f'border:1px solid {colors[index % len(colors)]}35;border-radius:9px;background:{colors[index % len(colors)]}0d;'
-        f'color:{colors[index % len(colors)]};font-size:13px;font-weight:750;text-decoration:none">'
-        f'{html.escape(name)} <span style="font-size:11px;font-weight:600;opacity:.75">{len(rows)} 条</span></a>'
-        for index, (name, rows) in enumerate(grouped_entries))
-    toc_html = (f'''<tr><td style="padding:20px 24px 4px"><div style="background:#fff;border:1px solid #e3e9e5;border-radius:12px;padding:15px 16px"><div style="font-size:11px;letter-spacing:1px;color:#7c8781;font-weight:800;margin-bottom:7px">平台导航 · 点击快速跳转</div><div>{toc_links}</div></div></td></tr>''' if toc_links else "")
+    toc_parts = []
+    for list_index, name in enumerate(source_names):
+        rows = grouped.get(name, [])
+        if rows:
+            anchor_index = anchor_by_source[name]
+            color = colors[anchor_index % len(colors)]
+            toc_parts.append(
+                f'<a href="#platform-{anchor_index}" style="display:inline-block;margin:4px 5px 4px 0;padding:9px 12px;'
+                f'border:1px solid {color}35;border-radius:9px;background:{color}0d;color:{color};'
+                f'font-size:13px;font-weight:750;text-decoration:none">{html.escape(name)} '
+                f'<span style="font-size:11px;font-weight:600;opacity:.75">{len(rows)} 条</span></a>')
+        else:
+            toc_parts.append(
+                f'<span style="display:inline-block;margin:4px 5px 4px 0;padding:9px 12px;border:1px solid #e1e5e3;'
+                f'border-radius:9px;background:#f5f6f5;color:#8a928e;font-size:13px;font-weight:650">'
+                f'{html.escape(name)} <span style="font-size:11px;font-weight:500">0 条 · 今日无更新</span></span>')
+    toc_links = "".join(toc_parts)
+    updated_count = len(grouped_entries)
+    toc_html = (f'''<tr><td style="padding:20px 24px 4px"><div style="background:#fff;border:1px solid #e3e9e5;border-radius:12px;padding:15px 16px"><div style="font-size:11px;letter-spacing:1px;color:#7c8781;font-weight:800;margin-bottom:7px">订阅平台 {len(source_names)} 个 · {updated_count} 个有更新 · 点击快速跳转</div><div>{toc_links}</div></div></td></tr>''' if toc_links else "")
     sections = []
     for index, (source, rows) in enumerate(grouped_entries):
         color = colors[index % len(colors)]
@@ -570,7 +584,7 @@ def send_email(settings, subject, body, account, recipient):
         smtp.send_message(msg, to_addrs=[recipient])
 
 
-def execute_digest(send=True, account_id=None, subscriber_id=None, scheduled=False):
+def execute_digest(send=True, account_id=None, subscriber_id=None, subscriber_ids=None, scheduled=False):
     if not run_lock.acquire(blocking=False):
         raise RuntimeError("已有汇总任务正在运行")
     current_run_id = None
@@ -583,13 +597,20 @@ def execute_digest(send=True, account_id=None, subscriber_id=None, scheduled=Fal
             else:
                 account = conn.execute("""SELECT * FROM sender_accounts WHERE enabled=1
                     ORDER BY is_default DESC,id LIMIT 1""").fetchone()
-            if subscriber_id:
+            if subscriber_ids:
+                normalized_ids = sorted({int(value) for value in subscriber_ids})
+                placeholders = ",".join("?" for _ in normalized_ids)
+                subscribers = conn.execute(
+                    f"SELECT * FROM subscribers WHERE enabled=1 AND id IN ({placeholders}) ORDER BY id",
+                    normalized_ids).fetchall()
+            elif subscriber_id:
                 subscribers = conn.execute("SELECT * FROM subscribers WHERE id=?", (subscriber_id,)).fetchall()
             else:
                 subscribers = conn.execute("SELECT * FROM subscribers WHERE enabled=1 ORDER BY id").fetchall()
             if not subscribers:
                 raise RuntimeError("尚未配置订阅用户")
             collected_sources = set()
+            source_errors = {}
             for subscriber in subscribers:
                 errors = []
                 start, end = digest_window(dict(subscriber))
@@ -603,10 +624,14 @@ def execute_digest(send=True, account_id=None, subscriber_id=None, scheduled=Fal
                 for source in sources:
                     if source["id"] in collected_sources:
                         continue
+                    if source["id"] in source_errors:
+                        errors.append(f"{source['name']}: {source_errors[source['id']]}")
+                        continue
                     try:
                         collect_source(conn, source, start, end)
                         collected_sources.add(source["id"])
                     except Exception as exc:
+                        source_errors[source["id"]] = str(exc)
                         errors.append(f"{source['name']}: {exc}")
                 source_ids = [source["id"] for source in sources]
                 if source_ids:
@@ -623,7 +648,8 @@ def execute_digest(send=True, account_id=None, subscriber_id=None, scheduled=Fal
                     overview = llm_overview(settings, items)
                 except Exception as exc:
                     errors.append(f"AI 摘要: {exc}")
-                body = render_email(start, end, items, overview)
+                body = render_email(start, end, items, overview,
+                                    source_names=[source["name"] for source in sources])
                 reader_url, body = publish_reader_page(conn, body)
                 sent = 0
                 if send:
@@ -954,16 +980,22 @@ def preview(run_id):
         run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if not run: abort(404)
         if run["subscriber_id"]:
+            source_names = [row["name"] for row in conn.execute("""SELECT sources.name FROM sources
+                JOIN subscriber_sources ON subscriber_sources.source_id=sources.id
+                WHERE subscriber_sources.subscriber_id=? AND sources.enabled=1 ORDER BY sources.id""",
+                (run["subscriber_id"],)).fetchall()]
             items = conn.execute("""SELECT items.*,sources.name source_name FROM items
                 JOIN sources ON sources.id=items.source_id
                 JOIN subscriber_sources ON subscriber_sources.source_id=sources.id
                 WHERE subscriber_sources.subscriber_id=? AND published_at>=? AND published_at<?
                 ORDER BY published_at DESC""", (run["subscriber_id"], run["window_start"], run["window_end"])).fetchall()
         else:
+            source_names = None
             items = conn.execute("""SELECT items.*,sources.name source_name FROM items JOIN sources ON sources.id=items.source_id
                 WHERE published_at>=? AND published_at<? ORDER BY published_at DESC""",
                 (run["window_start"], run["window_end"])).fetchall()
-    return render_email(parse_dt(run["window_start"]), parse_dt(run["window_end"]), items, "")
+    return render_email(parse_dt(run["window_start"]), parse_dt(run["window_end"]), items, "",
+                        source_names=source_names)
 
 
 @app.get('/digest/read/<token>')
@@ -990,11 +1022,12 @@ def scheduled_digest():
         due = conn.execute("""SELECT id FROM subscribers WHERE enabled=1 AND schedule_time<=?
             AND (last_sent_at IS NULL OR substr(last_sent_at,1,10)<?) ORDER BY schedule_time,id""",
             (current.strftime("%H:%M"), current.strftime("%Y-%m-%d"))).fetchall()
-    for subscriber in due:
+    due_ids = [subscriber["id"] for subscriber in due]
+    if due_ids:
         try:
-            execute_digest(send=True, subscriber_id=subscriber["id"], scheduled=True)
+            execute_digest(send=True, subscriber_ids=due_ids, scheduled=True)
         except Exception:
-            app.logger.exception("订阅用户 %s 的定时任务失败", subscriber["id"])
+            app.logger.exception("订阅用户批量定时任务失败：%s", due_ids)
 
 
 init_db()

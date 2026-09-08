@@ -1,6 +1,7 @@
 """Public, first-party news lists. No scripts or remote code are executed."""
 import hashlib
 import re
+import time
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -24,14 +25,27 @@ BUILTIN_SOURCES = [
     ('金十数据 热点头条', 'web', 'https://xnews.jin10.com/53'),
 ] + CATALOG
 
+
+def get_with_retry(url, *, user_agent, params=None):
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.get(url, params=params, timeout=(8, 20),
+                                    headers={'User-Agent': user_agent})
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.6 * (attempt + 1))
+    raise last_error
+
 def fetch_official(source, parse_dt, clean_text, user_agent):
     url = source['url']
     host = urlparse(url).hostname
     if host == 'qwen.ai':
-        response = requests.get('https://qwen.ai/api/v2/article/retrieval',
-                                params={'type': 'qwen_ai', 'language': 'en-US'}, timeout=25,
-                                headers={'User-Agent': user_agent})
-        response.raise_for_status()
+        response = get_with_retry('https://qwen.ai/api/v2/article/retrieval', user_agent=user_agent,
+                                  params={'type': 'qwen_ai', 'language': 'en-US'})
         articles = response.json().get('data', {}).get('articles', [])
         results = []
         for article in articles:
@@ -48,8 +62,7 @@ def fetch_official(source, parse_dt, clean_text, user_agent):
         if not results:
             raise ValueError('Qwen 官方接口未返回可识别的文章')
         return results
-    response = requests.get(url, timeout=25, headers={'User-Agent': user_agent})
-    response.raise_for_status()
+    response = get_with_retry(url, user_agent=user_agent)
     soup = BeautifulSoup(response.content, 'html.parser')
     results, seen = [], set()
     for link in soup.select('a[href]'):
@@ -71,8 +84,7 @@ def fetch_official(source, parse_dt, clean_text, user_agent):
             continue
         if host == 'www.csrc.gov.cn':
             try:
-                detail = requests.get(target, timeout=20, headers={'User-Agent': user_agent})
-                detail.raise_for_status()
+                detail = get_with_retry(target, user_agent=user_agent)
                 detail_soup = BeautifulSoup(detail.content, 'html.parser')
                 date_meta = detail_soup.select_one('meta[name="createDate"],meta[name="PubDate"]')
                 published = parse_dt(date_meta.get('content')) if date_meta else None
