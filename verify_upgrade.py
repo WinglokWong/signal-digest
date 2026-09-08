@@ -22,7 +22,7 @@ def check_reader():
     assert response.headers['Cache-Control'] == 'private, no-store'
     soup = BeautifulSoup(body, 'html.parser')
     assert all(soup.find(id=a['href'][1:]) for a in soup.select('a[href^="#"]'))
-    assert 'Platform Empty' in body and '0 条 · 今日无更新' in body
+    assert 'Platform Empty' not in body and '今日无更新' not in body
     assert reader_url.encode() in email_body.encode()
     assert ('href="' + reader_url + '#platform-0"').encode() in email_body.encode()
     print('READER PASS: anonymous token access, invalid token, absolute platform links, no-store', flush=True)
@@ -57,6 +57,22 @@ for name, kind, url in CATALOG:
     try:
         source = dict(name=name,kind=kind,url=url)
         rows = app.fetch_rss(source) if kind == 'rss' else fetch_official(source, app.parse_dt, app.clean_text, app.USER_AGENT)
+        if not rows:
+            raise ValueError('empty')
+        newest = max(row['published'] for row in rows)
+        print(name, len(rows), newest.isoformat(), rows[0]['title'][:70], flush=True)
+    except Exception as exc:
+        print(name, 'FAILED', str(exc)[:200], flush=True)
+
+custom_sources = [
+    ('新智元', app.fetch_aiera, {'url': 'https://aiera.com.cn/'}),
+    ('财联社 A股资讯', app.fetch_cls, {'url': 'https://www.cls.cn/depth?id=1003'}),
+    ('新浪财经 要闻', app.fetch_sina, {'url': 'https://finance.sina.com.cn/'}),
+    ('金十数据 热点头条', app.fetch_jin10, {'url': 'https://xnews.jin10.com/53'}),
+]
+for name, fetcher, source in custom_sources:
+    try:
+        rows = fetcher(source)
         if not rows:
             raise ValueError('empty')
         newest = max(row['published'] for row in rows)

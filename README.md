@@ -11,6 +11,7 @@ Signal Digest is a self-hosted news collection and email delivery service. It co
 - RSS/Atom ingestion, configurable CSS selectors, and dedicated adapters for supported sites.
 - Deduplication, original article links, run history, previews, and manual delivery.
 - Responsive email design with platform grouping and topic labels.
+- Sources with no items in the subscriber's reporting window are omitted from the email.
 - Private browser reader pages with reliable platform navigation. Reader links use random tokens, are excluded from search indexing, disable caching, and expire after 90 days.
 - Optional OpenAI-compatible summarization.
 

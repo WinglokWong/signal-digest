@@ -294,6 +294,33 @@ def fetch_web(source):
 def fetch_aiera(source):
     response = requests.get(source["url"], timeout=25, headers={"User-Agent": USER_AGENT})
     response.raise_for_status()
+    response.encoding = "utf-8"
+    feed_match = re.search(r"var\s+FEED\s*=\s*(\[.*?\]);\s*/\*\s*─+\s*数据:故事线", response.text, re.S)
+    if feed_match:
+        try:
+            feed_rows = json.loads(feed_match.group(1))
+        except json.JSONDecodeError as exc:
+            raise ValueError("新智元 FEED 数据格式无法解析") from exc
+        anchor = now()
+        results = []
+        for row in feed_rows:
+            if not isinstance(row, list) or len(row) < 6:
+                continue
+            time_text, date_text, title, summary, source_name, item_id = row[:6]
+            match = re.fullmatch(r"(\d{1,2})/(\d{1,2})", str(date_text).strip())
+            clock = re.fullmatch(r"(\d{1,2}):(\d{2})", str(time_text).strip())
+            if not match or not clock:
+                continue
+            month, day = map(int, match.groups())
+            hour, minute = map(int, clock.groups())
+            published = datetime(anchor.year, month, day, hour, minute, tzinfo=TZ)
+            if published > anchor + timedelta(days=1):
+                published = published.replace(year=anchor.year - 1)
+            url = urljoin(source["url"], f"asi-item.html?id={item_id}")
+            results.append({"guid": f"aiera-{item_id}", "title": clean_text(title, 300),
+                            "url": url, "summary": clean_text(summary), "published": published})
+        if results:
+            return results
     soup = BeautifulSoup(response.text, "html.parser")
     results = []
     for node in soup.select("main article"):
@@ -507,7 +534,7 @@ def render_email(start, end, items, overview, source_names=None):
     for item in items:
         grouped.setdefault(item["source_name"], []).append(item)
     grouped_entries = list(grouped.items())
-    source_names = list(dict.fromkeys(source_names or grouped.keys()))
+    source_names = list(grouped.keys())
     anchor_by_source = {name: index for index, (name, _) in enumerate(grouped_entries)}
     colors = ("#176b4d", "#b14c32", "#315da8", "#7657a6")
     summary_cards = "".join(
@@ -532,7 +559,7 @@ def render_email(start, end, items, overview, source_names=None):
                 f'{html.escape(name)} <span style="font-size:11px;font-weight:500">0 条 · 今日无更新</span></span>')
     toc_links = "".join(toc_parts)
     updated_count = len(grouped_entries)
-    toc_html = (f'''<tr><td style="padding:20px 24px 4px"><div style="background:#fff;border:1px solid #e3e9e5;border-radius:12px;padding:15px 16px"><div style="font-size:11px;letter-spacing:1px;color:#7c8781;font-weight:800;margin-bottom:7px">订阅平台 {len(source_names)} 个 · {updated_count} 个有更新 · 点击快速跳转</div><div>{toc_links}</div></div></td></tr>''' if toc_links else "")
+    toc_html = (f'''<tr><td style="padding:20px 24px 4px"><div style="background:#fff;border:1px solid #e3e9e5;border-radius:12px;padding:15px 16px"><div style="font-size:11px;letter-spacing:1px;color:#7c8781;font-weight:800;margin-bottom:7px">本期有更新平台 {updated_count} 个 · 点击快速跳转</div><div>{toc_links}</div></div></td></tr>''' if toc_links else "")
     sections = []
     for index, (source, rows) in enumerate(grouped_entries):
         color = colors[index % len(colors)]
