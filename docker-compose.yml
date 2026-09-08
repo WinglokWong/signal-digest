@@ -1,0 +1,13 @@
+services:
+  digest:
+    build: .
+    container_name: signal-digest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - digest_data:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
+
+volumes:
+  digest_data:

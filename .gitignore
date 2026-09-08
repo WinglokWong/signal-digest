@@ -1,0 +1,16 @@
+.env
+.DS_Store
+__pycache__/
+*.py[cod]
+*.db
+*.db-*
+*.sqlite*
+*.log
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+digest_data/
+deploy/*.production.conf
+deploy/*.bak*
